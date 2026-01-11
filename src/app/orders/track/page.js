@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -26,7 +26,7 @@ const statusColorMap = {
   Cancelled: 'error',
 };
 
-export default function OrderTrackingPage() {
+function OrderTrackingContent() {
   const searchParams = useSearchParams();
   const queryPhone = searchParams.get('phone') || '';
 
@@ -248,5 +248,19 @@ export default function OrderTrackingPage() {
         </Paper>
       </Container>
     </Box>
+  );
+}
+
+export default function OrderTrackingPage() {
+  return (
+    <Suspense
+      fallback={
+        <Box sx={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Typography variant="body1">Loading tracker...</Typography>
+        </Box>
+      }
+    >
+      <OrderTrackingContent />
+    </Suspense>
   );
 }
