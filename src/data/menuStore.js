@@ -1,11 +1,15 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
+import { getSupabaseAdminClient } from '@/lib/supabaseServer';
 
 const dataDirectory = path.join(process.cwd(), 'data');
 const menuJsonPath = path.join(dataDirectory, 'menu.json');
 const seedYamlPath = path.join(process.cwd(), 'public', 'menu.yaml');
 const assetsDirectory = path.join(process.cwd(), 'public', 'assets');
+const MENU_ROW_ID = 'active-menu';
+const supabase = getSupabaseAdminClient();
+const supabaseEnabled = Boolean(supabase);
 
 const DEFAULT_CATEGORIES = [
   { key: 'starters', label: 'Starters' },
@@ -89,19 +93,75 @@ async function ensureMenuFile() {
   await fs.writeFile(menuJsonPath, JSON.stringify(normalizeMenu(), null, 2), 'utf-8');
 }
 
+async function readMenuFromSupabase() {
+  const { data, error } = await supabase
+    .from('menus')
+    .select('payload')
+    .eq('id', MENU_ROW_ID)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (data?.payload) {
+    return normalizeMenu(data.payload);
+  }
+
+  const seeded = normalizeMenu();
+  const insertResult = await supabase
+    .from('menus')
+    .upsert({ id: MENU_ROW_ID, payload: seeded })
+    .select('payload')
+    .single();
+
+  if (insertResult.error) {
+    throw insertResult.error;
+  }
+
+  return normalizeMenu(insertResult.data.payload);
+}
+
+async function writeMenuToSupabase(nextMenu) {
+  const normalized = normalizeMenu(nextMenu);
+  const { error } = await supabase
+    .from('menus')
+    .upsert({ id: MENU_ROW_ID, payload: normalized });
+  if (error) {
+    throw error;
+  }
+  return normalized;
+}
+
 export async function readMenuData() {
+  if (supabaseEnabled) {
+    try {
+      return await readMenuFromSupabase();
+    } catch (error) {
+      console.error('Unable to read menu data from Supabase, falling back to file store.', error);
+    }
+  }
+
   try {
     await ensureMenuFile();
     const raw = await fs.readFile(menuJsonPath, 'utf-8');
     const parsed = JSON.parse(raw || '{}');
     return normalizeMenu(parsed);
   } catch (error) {
-    console.error('Unable to read menu data', error);
+    console.error('Unable to read menu data from file store', error);
     return normalizeMenu();
   }
 }
 
 export async function writeMenuData(nextMenu = {}) {
+  if (supabaseEnabled) {
+    try {
+      return await writeMenuToSupabase(nextMenu);
+    } catch (error) {
+      console.error('Unable to write menu data to Supabase, falling back to file store.', error);
+    }
+  }
+
   await ensureMenuFile();
   const normalized = normalizeMenu(nextMenu);
   await fs.writeFile(menuJsonPath, JSON.stringify(normalized, null, 2), 'utf-8');

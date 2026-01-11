@@ -3,8 +3,11 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import { promises as fs } from 'fs';
 import { ensureAssetsDirectory } from '@/data/menuStore';
+import { getSupabaseAdminClient } from '@/lib/supabaseServer';
 
 const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+const supabase = getSupabaseAdminClient();
+const storageBucket = process.env.SUPABASE_STORAGE_BUCKET || 'menu-assets';
 
 export async function POST(request) {
   try {
@@ -31,10 +34,26 @@ export async function POST(request) {
     }
 
     const safeName = `menu-${Date.now()}-${randomUUID()}${ext}`;
+
+    if (supabase) {
+      const pathKey = `uploads/${safeName}`;
+      const { error: uploadError } = await supabase.storage
+        .from(storageBucket)
+        .upload(pathKey, Buffer.from(arrayBuffer), {
+          contentType: file.type || 'application/octet-stream',
+          upsert: true,
+        });
+      if (uploadError) {
+        console.error('Unable to upload image to Supabase storage', uploadError);
+        return NextResponse.json({ error: uploadError.message || 'Failed to upload image.' }, { status: 500 });
+      }
+      const { data: publicData } = supabase.storage.from(storageBucket).getPublicUrl(pathKey);
+      return NextResponse.json({ url: publicData.publicUrl });
+    }
+
     const assetsDir = await ensureAssetsDirectory();
     const outputPath = path.join(assetsDir, safeName);
     await fs.writeFile(outputPath, Buffer.from(arrayBuffer));
-
     return NextResponse.json({ url: `/assets/${safeName}` });
   } catch (error) {
     console.error('Unable to upload image', error);
