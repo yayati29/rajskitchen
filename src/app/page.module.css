@@ -1,0 +1,120 @@
+.main {
+  font-family: system-ui, sans-serif;
+}
+
+.hero {
+  background: linear-gradient(135deg, #d35400, #e67e22);
+  color: white;
+  text-align: center;
+  padding: 5rem 1rem;
+}
+
+.hero h1 {
+  font-size: 3rem;
+  margin-bottom: 0.5rem;
+}
+
+.hero p {
+  font-size: 1.2rem;
+  opacity: 0.9;
+  margin-bottom: 2rem;
+}
+
+.btn {
+  display: inline-block;
+  background: white;
+  color: #d35400;
+  padding: 0.8rem 2rem;
+  border-radius: 4px;
+  font-weight: 600;
+  transition: transform 0.2s;
+}
+
+.btn:hover {
+  transform: scale(1.05);
+}
+
+.features {
+  display: flex;
+  justify-content: center;
+  gap: 3rem;
+  padding: 3rem 1rem;
+  flex-wrap: wrap;
+  background: #fdf6f0;
+}
+
+.feature {
+  text-align: center;
+  max-width: 200px;
+}
+
+.feature h3 {
+  color: #d35400;
+  margin-bottom: 0.5rem;
+}
+
+.dishes {
+  text-align: center;
+  padding: 3rem 1rem;
+}
+
+.dishes h2 {
+  font-size: 2rem;
+  margin-bottom: 2rem;
+  color: #333;
+}
+
+.grid {
+  display: flex;
+  justify-content: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 2rem;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 1.5rem;
+  width: 250px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.card h3 {
+  color: #333;
+  margin-bottom: 0.5rem;
+}
+
+.card p {
+  color: #666;
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.card span {
+  color: #d35400;
+  font-weight: 700;
+  font-size: 1.2rem;
+}
+
+.dishes .btn {
+  background: #d35400;
+  color: white;
+}
+
+.footer {
+  background: #333;
+  color: white;
+  text-align: center;
+  padding: 2rem;
+}
+
+@media (max-width: 600px) {
+  .hero h1 {
+    font-size: 2rem;
+  }
+  .features {
+    gap: 2rem;
+  }
+}
