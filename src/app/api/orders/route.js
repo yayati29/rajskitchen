@@ -44,25 +44,28 @@ export async function POST(request) {
       );
     }
 
+    console.log('Creating order for customer:', customer.name, customer.phone);
     const { order } = await addOrder({ customer, items, totals, fulfillment });
+    console.log('Order created successfully:', order.publicId);
 
-    // bump on-disk orders version so admin polling detects change reliably
+    // Bump on-disk orders version so admin polling detects change reliably
     try {
       const dataDir = path.join(process.cwd(), 'data');
       await fs.mkdir(dataDir, { recursive: true });
       const versionFile = path.join(dataDir, 'orders-version.json');
-      const payload = { version: new Date().toISOString() };
-      await fs.writeFile(versionFile, JSON.stringify(payload), 'utf-8');
+      const versionPayload = { version: new Date().toISOString() };
+      await fs.writeFile(versionFile, JSON.stringify(versionPayload), 'utf-8');
     } catch (versionErr) {
       console.warn('Unable to write orders version file', versionErr);
     }
 
     return NextResponse.json({ order }, { status: 201 });
   } catch (error) {
-    console.error('Failed to create order', error);
+    console.error('Failed to create order:', error);
     const status = error.status || 500;
+    const message = error.message || 'Unable to place order right now. Please try again.';
     return NextResponse.json(
-      { error: error.message || 'Unable to place order right now. Please try again.' },
+      { error: message },
       { status },
     );
   }

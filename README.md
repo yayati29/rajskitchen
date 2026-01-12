@@ -42,37 +42,134 @@ Locally, Supabase/KV credentials are optional: if they are missing, the app fall
 
 1. [Create a Supabase project](https://supabase.com/dashboard).
 2. Under **Project Settings → API**, copy the project `URL` and the `service_role` key into `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (Vercel + `.env.local`).
-3. Create the required tables (SQL editor > Run):
+3. Create the required tables. Go to **SQL Editor** and run these commands:
 
+### Menus Table
 ```sql
-create table public.menus (
+CREATE TABLE public.menus (
 	id text primary key,
 	payload jsonb not null,
 	updated_at timestamptz not null default now()
 );
+```
 
-create table public.orders (
-	id text primary key,
-	status text not null,
-	placed_at timestamptz not null,
-	scheduled_for timestamptz,
-	tracking_phone_key text,
-	customer_phone text,
-	payload jsonb not null,
-	created_at timestamptz not null default now(),
-	updated_at timestamptz not null default now()
+### Orders Table (Simplified Schema)
+```sql
+-- Drop existing table if it exists (only on migration)
+DROP TABLE IF EXISTS public.orders CASCADE;
+
+-- Create the new simplified orders table
+CREATE TABLE public.orders (
+  id UUID PRIMARY KEY,
+  public_id VARCHAR(255) NOT NULL UNIQUE,
+  customer_name VARCHAR(255) NOT NULL,
+  customer_phone VARCHAR(20) NOT NULL,
+  customer_building VARCHAR(255),
+  customer_apartment VARCHAR(255),
+  items_summary TEXT,
+  items_count INTEGER DEFAULT 0,
+  subtotal DECIMAL(10, 2) DEFAULT 0,
+  delivery_fee DECIMAL(10, 2) DEFAULT 0,
+  total DECIMAL(10, 2) DEFAULT 0,
+  status VARCHAR(50) DEFAULT 'Pending',
+  fulfillment_method VARCHAR(50) DEFAULT 'delivery',
+  scheduled_for TIMESTAMP,
+  placed_at TIMESTAMP NOT NULL,
+  accepted_at TIMESTAMP,
+  delivered_at TIMESTAMP,
+  cancelled_at TIMESTAMP,
+  tracking_phone_key VARCHAR(20),
+  order_data JSONB NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW()
 );
 
-create index if not exists orders_tracking_phone_idx on public.orders (tracking_phone_key);
-create index if not exists orders_placed_at_idx on public.orders (placed_at desc);
+-- Create indexes for faster queries
+CREATE INDEX idx_orders_tracking_phone_key ON public.orders(tracking_phone_key);
+CREATE INDEX idx_orders_public_id ON public.orders(public_id);
+CREATE INDEX idx_orders_placed_at ON public.orders(placed_at DESC);
+CREATE INDEX idx_orders_status ON public.orders(status);
+
+-- Enable Row Level Security
+ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
+
+-- Create policies to allow orders to be read and written
+CREATE POLICY "Allow anonymous inserts" ON public.orders
+  FOR INSERT
+  WITH CHECK (true);
+
+CREATE POLICY "Allow reading orders by tracking_phone_key" ON public.orders
+  FOR SELECT
+  USING (true);
+
+CREATE POLICY "Allow all updates" ON public.orders
+  FOR UPDATE
+  USING (true)
+  WITH CHECK (true);
 ```
 
 4. Storage → **Create bucket** named `menu-assets` (or set `SUPABASE_STORAGE_BUCKET` to a name you prefer) and make it public. The admin image uploader pushes files into this bucket and stores their public URLs in the menu data.
-5. Redeploy on Vercel so the new environment variables are available to the serverless functions.
+
+5. Verify all table creation succeeded in Supabase:
+   - Go to **Database → Tables**
+   - You should see `menus` and `orders` tables listed
+   - Click on `orders` to verify all columns are present
+
+6. Redeploy on Vercel so the new environment variables are available to the serverless functions.
+
+### Order Placement System
+
+The order placement system uses Supabase as the primary store with automatic fallback to local file storage:
+
+- **Primary**: Orders are persisted to the `orders` table in Supabase
+- **Fallback**: If Supabase fails, orders are saved to `data/orders.json` locally
+- **Full Payload**: The complete order object is stored in the `order_data` JSONB column for data integrity
+- **Admin Dashboard**: Reads from Supabase `orders` table and displays all order details
+- **Order Tracking**: Customers can track orders by phone number using the `tracking_phone_key` column
+
+**Important**: Payment processing is not yet implemented. Orders are marked as "Pending" on placement and payment will be collected via UPI on delivery.
 
 With this setup the menu editor, order placement/tracking, and kitchen toggle all persist across deployments without relying on the file system that Vercel resets between requests.
 
 Locally, if the KV variables are not present, the app falls back to `data/kitchen-status.json` so you can toggle the kitchen without extra setup. On Vercel you must create a free [Vercel KV](https://vercel.com/docs/storage/vercel-kv) database and add the generated credentials under **Project → Settings → Environment Variables** before deploying; otherwise the “Shut Kitchen” control cannot persist.
+
+## Troubleshooting Order Placement
+
+If orders are not appearing in Supabase after placing them:
+
+### Check 1: Verify Environment Variables
+Ensure these are set in Vercel **Project → Settings → Environment Variables**:
+- `SUPABASE_URL` – Your Supabase project URL
+- `SUPABASE_SERVICE_ROLE_KEY` – Service role key (NOT the anon key)
+
+### Check 2: Review Vercel Logs
+1. Go to your Vercel dashboard
+2. Select your project
+3. Click **Deployments → (latest) → Functions**
+4. Look for `/api/orders` and check the logs for errors
+5. Check for messages like "Order created successfully" or database errors
+
+### Check 3: Verify Supabase Table
+1. Go to Supabase dashboard → **Database → Tables**
+2. Click on the `orders` table
+3. Check if the table exists and has all columns:
+   - `id`, `public_id`, `customer_name`, `customer_phone`, `customer_building`, `customer_apartment`
+   - `items_summary`, `items_count`, `subtotal`, `delivery_fee`, `total`
+   - `status`, `fulfillment_method`, `scheduled_for`, `placed_at`, `accepted_at`, `delivered_at`, `cancelled_at`
+   - `tracking_phone_key`, `order_data`
+
+### Check 4: Test RLS Policies
+Supabase uses Row Level Security. Verify policies are in place:
+1. Go to **Database → Tables → orders → Authentication**
+2. You should see policies for `INSERT`, `SELECT`, and `UPDATE`
+
+### Check 5: Local Fallback
+If Supabase fails, orders are saved locally:
+- Check `/data/orders.json` in your deployment
+- If orders are there, Supabase connection is the issue
+- If nothing is there, the API route itself failed
+
+If you see errors in the logs but orders appear locally, Supabase connection/permissions need fixing.
 
 ## Sync Existing Menu Data
 
