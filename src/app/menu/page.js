@@ -45,6 +45,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import KitchenClosedLanding from '@/components/KitchenClosedLanding';
 import { useTheme } from '@mui/material/styles';
+import getSupabaseClient from '@/lib/supabaseClient';
 
 const DEFAULT_CATEGORIES = [
   { key: 'starters', label: 'Starters' },
@@ -162,6 +163,74 @@ export default function MenuPage() {
     return () => {
       isMounted = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    const MENU_ROW_ID = 'active-menu';
+
+    const channel = supabase
+      .channel('menu-listener')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'menus', filter: `id=eq.${MENU_ROW_ID}` },
+        (payload) => {
+          try {
+            if (payload?.new?.payload) {
+              setMenuData(normalizeMenuData(payload.new.payload));
+            }
+          } catch (e) {
+            console.error('Failed to apply realtime menu update', e);
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      try {
+        supabase.removeChannel(channel);
+      } catch (e) {
+        // ignore cleanup errors
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Polling fallback when Supabase realtime isn't configured
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (supabase) return;
+
+    let mounted = true;
+    let currentVersion = null;
+
+    const checkVersion = async () => {
+      try {
+        const res = await fetch('/api/menu/last-updated');
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json) return;
+        if (currentVersion && json.version && json.version !== currentVersion) {
+          const resp = await fetch('/api/menu');
+          const payload = await resp.json().catch(() => null);
+          if (resp.ok && payload?.menu && mounted) {
+            setMenuData(normalizeMenuData(payload.menu));
+          }
+        }
+        currentVersion = json.version;
+      } catch (e) {
+        console.error('Menu polling failed', e);
+      }
+    };
+
+    checkVersion();
+    const id = setInterval(checkVersion, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

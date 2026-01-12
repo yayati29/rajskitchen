@@ -214,7 +214,7 @@ export default function CheckoutPage() {
       localStorage.removeItem('rajCart');
       setCart([]);
       setFormValues(initialFormState);
-      const orderId = payload?.order?.id;
+      const orderId = payload?.order?.publicId || payload?.order?.id;
       setSubmissionStatus({
         type: 'success',
         message: orderId

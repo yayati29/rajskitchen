@@ -18,6 +18,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import Grid from '@mui/material/Grid';
 import OrdersListClient from './OrdersListClient';
 import { useRouter } from 'next/navigation';
+import getSupabaseClient from '@/lib/supabaseClient';
 
 const REFRESH_INTERVAL_MS = 15000; // 15s auto-refresh cadence
 
@@ -78,6 +79,74 @@ export default function DashboardTabs({
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [router]);
+
+  // Supabase realtime: refresh immediately on new/updated orders
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    const channel = supabase
+      .channel('orders-listener')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, () => {
+        try {
+          router.refresh();
+        } catch (e) {
+          console.error('Failed to refresh on new order', e);
+        }
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, () => {
+        try {
+          router.refresh();
+        } catch (e) {
+          console.error('Failed to refresh on order update', e);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      try {
+        supabase.removeChannel(channel);
+      } catch (e) {
+        // ignore
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Polling fallback when Supabase realtime isn't available
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (supabase) return;
+
+    let mounted = true;
+    let currentVersion = null;
+
+    const checkVersion = async () => {
+      try {
+        const res = await fetch('/api/orders/last-updated');
+        const json = await res.json().catch(() => null);
+        if (!res.ok || !json) return;
+        if (currentVersion && json.version && json.version !== currentVersion) {
+          try {
+            router.refresh();
+          } catch (e) {
+            console.error('Failed to refresh admin on orders change', e);
+          }
+        }
+        currentVersion = json.version;
+      } catch (e) {
+        console.error('Orders polling failed', e);
+      }
+    };
+
+    checkVersion();
+    const id = setInterval(checkVersion, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <Card

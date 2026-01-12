@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "seed:menu": "node scripts/sync-menu.mjs"
   },
   "dependencies": {
     "@vercel/kv": "^1.0.1",

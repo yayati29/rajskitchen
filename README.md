@@ -74,6 +74,17 @@ With this setup the menu editor, order placement/tracking, and kitchen toggle al
 
 Locally, if the KV variables are not present, the app falls back to `data/kitchen-status.json` so you can toggle the kitchen without extra setup. On Vercel you must create a free [Vercel KV](https://vercel.com/docs/storage/vercel-kv) database and add the generated credentials under **Project → Settings → Environment Variables** before deploying; otherwise the “Shut Kitchen” control cannot persist.
 
+## Sync Existing Menu Data
+
+If your local `data/menu.json` (or `public/menu.yaml`) already contains the dishes you curated before moving to Supabase, push that payload into the remote `menus` table with:
+
+```bash
+npm run seed:menu            # reads data/menu.json by default
+# npm run seed:menu public/menu.yaml  # optional: pick a different source
+```
+
+The script reads your `.env.local` for `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`, upserts the `active-menu` row, and prints a confirmation. Redeploy once so serverless functions pick up the latest menu snapshot.
+
 ## Learn More
 
 To learn more about Next.js and the tools used here:

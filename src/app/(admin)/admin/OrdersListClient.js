@@ -122,7 +122,7 @@ export default function OrdersListClient({ orders }) {
                     fontWeight={700}
                     sx={{ fontFamily: 'var(--font-heading)' }}
                   >
-                    {order.id}
+                    {order.publicId || order.id}
                   </Typography>
                 </Box>
                 <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap">

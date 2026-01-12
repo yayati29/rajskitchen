@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { addOrder } from '@/data/orders';
 import { getKitchenStatus } from '@/data/kitchenStatus';
+import { promises as fs } from 'fs';
+import path from 'path';
 
 const validateCustomer = (customer) => {
   if (!customer) {
@@ -43,6 +45,17 @@ export async function POST(request) {
     }
 
     const { order } = await addOrder({ customer, items, totals, fulfillment });
+
+    // bump on-disk orders version so admin polling detects change reliably
+    try {
+      const dataDir = path.join(process.cwd(), 'data');
+      await fs.mkdir(dataDir, { recursive: true });
+      const versionFile = path.join(dataDir, 'orders-version.json');
+      const payload = { version: new Date().toISOString() };
+      await fs.writeFile(versionFile, JSON.stringify(payload), 'utf-8');
+    } catch (versionErr) {
+      console.warn('Unable to write orders version file', versionErr);
+    }
 
     return NextResponse.json({ order }, { status: 201 });
   } catch (error) {

@@ -25,6 +25,63 @@ const ordersFilePath = path.join(dataDirectory, 'orders.json');
 const supabase = getSupabaseAdminClient();
 const supabaseEnabled = Boolean(supabase);
 const ORDERS_TABLE = 'orders';
+const SUMMARY_COLUMNS = Object.freeze({
+	orderId: 'order_id',
+	customerName: 'customer_name',
+	phoneNumber: 'phone_number',
+	itemName: 'item_name',
+	itemQuantity: 'item_quantity',
+	buildingName: 'building_name',
+	apartmentNumber: 'apartment_number',
+	placedAt: 'order_placed_time',
+	acceptedAt: 'order_accepted_time',
+	deliveredAt: 'order_delivery_time',
+	revenue: 'revenue',
+});
+
+function summarizeItems(items = []) {
+	if (!Array.isArray(items) || items.length === 0) {
+		return 'N/A';
+	}
+	return items
+		.map(item => `${Number(item.quantity) || 1}× ${item.name || 'Menu Item'}`)
+		.join(', ');
+}
+
+function countItems(items = []) {
+	if (!Array.isArray(items)) {
+		return 0;
+	}
+	return items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
+}
+
+async function syncOrderSummary(order) {
+	if (!supabaseEnabled) {
+		return;
+	}
+	try {
+		const isCancelled = order.status === 'Cancelled';
+		const summaryRevenue = isCancelled ? 0 : order.total;
+		const deliveryTime = isCancelled ? null : order.deliveredAt;
+		const payload = {
+			id: order.id,
+			[SUMMARY_COLUMNS.orderId]: order.publicId,
+			[SUMMARY_COLUMNS.customerName]: order.customer?.name || 'Guest',
+			[SUMMARY_COLUMNS.phoneNumber]: order.customer?.phone || '',
+			[SUMMARY_COLUMNS.itemName]: summarizeItems(order.items),
+			[SUMMARY_COLUMNS.itemQuantity]: countItems(order.items),
+			[SUMMARY_COLUMNS.buildingName]: order.customer?.building || '',
+			[SUMMARY_COLUMNS.apartmentNumber]: order.customer?.apartment || '',
+			[SUMMARY_COLUMNS.placedAt]: order.placedAt,
+			[SUMMARY_COLUMNS.acceptedAt]: order.acceptedAt,
+			[SUMMARY_COLUMNS.deliveredAt]: deliveryTime,
+			[SUMMARY_COLUMNS.revenue]: summaryRevenue,
+		};
+		await supabase.from(ORDERS_TABLE).upsert(payload, { onConflict: 'id' });
+	} catch (error) {
+		console.error('Unable to sync order summary to Supabase.', error);
+	}
+}
 
 async function ensureStore() {
 	await fs.mkdir(dataDirectory, { recursive: true });
@@ -113,48 +170,11 @@ function normalizePhone(phone) {
 }
 
 export async function getOrders() {
-	if (supabaseEnabled) {
-		try {
-			const { data, error } = await supabase
-				.from(ORDERS_TABLE)
-				.select('payload, placed_at')
-				.order('placed_at', { ascending: false });
-			if (error) {
-				throw error;
-			}
-			return (data || []).map(row => sanitizeOrder(row.payload));
-		} catch (error) {
-			console.error('Unable to fetch orders from Supabase, falling back to file store.', error);
-		}
-	}
-
 	const orders = await readOrdersFromDisk();
 	return orders.map(order => sanitizeOrder(order));
 }
 
 export async function getOrderById(orderId) {
-	if (supabaseEnabled) {
-		try {
-			const { data, error } = await supabase
-				.from(ORDERS_TABLE)
-				.select('payload')
-				.eq('id', orderId)
-				.maybeSingle();
-			if (error) {
-				throw error;
-			}
-			if (!data?.payload) {
-				throw new OrderStoreError('Order not found', 404);
-			}
-			return sanitizeOrder(data.payload);
-		} catch (error) {
-			if (error instanceof OrderStoreError) {
-				throw error;
-			}
-			console.error('Unable to fetch order from Supabase, falling back to file store.', error);
-		}
-	}
-
 	const orders = await readOrdersFromDisk();
 	const order = orders.find(entry => entry.id === orderId);
 	if (!order) {
@@ -167,28 +187,6 @@ export async function getOrdersByPhone(phone) {
 	const phoneKey = normalizePhone(phone);
 	if (!phoneKey) {
 		throw new OrderStoreError('Phone number is required.');
-	}
-
-	if (supabaseEnabled) {
-		try {
-			const { data, error } = await supabase
-				.from(ORDERS_TABLE)
-				.select('payload')
-				.eq('tracking_phone_key', phoneKey)
-				.order('placed_at', { ascending: false });
-			if (error) {
-				throw error;
-			}
-			if (!data?.length) {
-				throw new OrderStoreError('No orders found for that phone number.', 404);
-			}
-			return data.map(row => sanitizeOrder(row.payload));
-		} catch (error) {
-			if (error instanceof OrderStoreError) {
-				throw error;
-			}
-			console.error('Unable to fetch orders by phone from Supabase, falling back to file store.', error);
-		}
 	}
 
 	const orders = await readOrdersFromDisk();
@@ -204,30 +202,6 @@ export async function getOrderForTracking(orderId, phone) {
 	if (!orderId || !phoneKey) {
 		throw new OrderStoreError('Order ID and phone are required.');
 	}
-
-	if (supabaseEnabled) {
-		try {
-			const { data, error } = await supabase
-				.from(ORDERS_TABLE)
-				.select('payload')
-				.eq('id', orderId)
-				.eq('tracking_phone_key', phoneKey)
-				.maybeSingle();
-			if (error) {
-				throw error;
-			}
-			if (!data?.payload) {
-				throw new OrderStoreError('Order not found', 404);
-			}
-			return sanitizeOrder(data.payload);
-		} catch (error) {
-			if (error instanceof OrderStoreError) {
-				throw error;
-			}
-			console.error('Unable to fetch tracking order from Supabase, falling back to file store.', error);
-		}
-	}
-
 	const orders = await readOrdersFromDisk();
 	const order = orders.find(
 		entry => entry.id === orderId && entry.trackingPhoneKey === phoneKey,
@@ -264,8 +238,14 @@ export async function addOrder(orderInput) {
 	const trackingPhoneKey = normalizePhone(phone);
 	const normalizedFulfillment = normalizeFulfillmentDetails(fulfillment || {});
 
+	// Use a DB-friendly UUID for the `id` column while retaining a
+	// human-friendly `publicId` inside the payload for display.
+	const dbId = crypto.randomUUID();
+	const publicId = `ORD-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+
 	const newOrder = {
-		id: `ORD-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`,
+		id: dbId,
+		publicId,
 		customer: {
 			name: customer?.name?.trim() || 'Guest',
 			phone,
@@ -282,35 +262,15 @@ export async function addOrder(orderInput) {
 		placedAt: now,
 		fulfillment: normalizedFulfillment,
 		scheduledFor: normalizedFulfillment.schedule?.iso || null,
+		acceptedAt: null,
+		deliveredAt: null,
+		cancelledAt: null,
 	};
-
-	if (supabaseEnabled) {
-		try {
-			const { data, error } = await supabase
-				.from(ORDERS_TABLE)
-				.insert({
-					id: newOrder.id,
-					status: newOrder.status,
-					placed_at: newOrder.placedAt,
-					scheduled_for: newOrder.scheduledFor,
-					tracking_phone_key: newOrder.trackingPhoneKey,
-					customer_phone: newOrder.customer.phone,
-					payload: newOrder,
-				})
-				.select('payload')
-				.single();
-			if (error) {
-				throw error;
-			}
-			return { order: sanitizeOrder(data.payload) };
-		} catch (error) {
-			console.error('Unable to add order to Supabase, falling back to file store.', error);
-		}
-	}
 
 	const existingOrders = await readOrdersFromDisk();
 	existingOrders.unshift(newOrder);
 	await writeOrdersToDisk(existingOrders);
+	await syncOrderSummary(newOrder);
 
 	return {
 		order: sanitizeOrder(newOrder),
@@ -321,49 +281,6 @@ export async function updateOrderStatus(orderId, nextStatus) {
 	if (!STATUS_FLOW[nextStatus]) {
 		throw new OrderStoreError('Unknown status supplied.');
 	}
-
-	if (supabaseEnabled) {
-		try {
-			const { data, error } = await supabase
-				.from(ORDERS_TABLE)
-				.select('payload')
-				.eq('id', orderId)
-				.maybeSingle();
-			if (error) {
-				throw error;
-			}
-			if (!data?.payload) {
-				throw new OrderStoreError('Order not found', 404);
-			}
-			const order = data.payload;
-			const allowed = STATUS_FLOW[order.status] || [];
-			if (!allowed.includes(nextStatus)) {
-				throw new OrderStoreError('Invalid status transition.');
-			}
-			const timestamp = new Date().toISOString();
-			order.status = nextStatus;
-			order.statusHistory.unshift({ status: nextStatus, timestamp });
-			const updateResult = await supabase
-				.from(ORDERS_TABLE)
-				.update({
-					status: order.status,
-					payload: order,
-				})
-				.eq('id', orderId)
-				.select('payload')
-				.single();
-			if (updateResult.error) {
-				throw updateResult.error;
-			}
-			return sanitizeOrder(updateResult.data.payload);
-		} catch (error) {
-			if (error instanceof OrderStoreError) {
-				throw error;
-			}
-			console.error('Unable to update order in Supabase, falling back to file store.', error);
-		}
-	}
-
 	const orders = await readOrdersFromDisk();
 	const index = orders.findIndex(order => order.id === orderId);
 	if (index === -1) {
@@ -379,7 +296,14 @@ export async function updateOrderStatus(orderId, nextStatus) {
 	const timestamp = new Date().toISOString();
 	order.status = nextStatus;
 	order.statusHistory.unshift({ status: nextStatus, timestamp });
+	if (!order.acceptedAt && nextStatus !== 'Pending') {
+		order.acceptedAt = timestamp;
+	}
+	if (nextStatus === 'Delivered') {
+		order.deliveredAt = timestamp;
+	}
 	await writeOrdersToDisk(orders);
+	await syncOrderSummary(order);
 
 	return sanitizeOrder(order);
 }
@@ -390,51 +314,10 @@ export async function cancelOrder({ orderId, reason, phone, actor = 'customer' }
 		order.status = 'Cancelled';
 		order.cancelReason = reason || null;
 		order.statusHistory.unshift({ status: 'Cancelled', timestamp, actor });
+		order.cancelledAt = timestamp;
+		order.deliveredAt = null;
 		return order;
 	};
-
-	if (supabaseEnabled) {
-		try {
-			const { data, error } = await supabase
-				.from(ORDERS_TABLE)
-				.select('payload')
-				.eq('id', orderId)
-				.maybeSingle();
-			if (error) {
-				throw error;
-			}
-			if (!data?.payload) {
-				throw new OrderStoreError('Order not found', 404);
-			}
-			const order = data.payload;
-			const isAdminAction = actor === 'admin';
-			if (!isAdminAction) {
-				const phoneKey = normalizePhone(phone);
-				if (!phoneKey || phoneKey !== order.trackingPhoneKey) {
-					throw new OrderStoreError('Unauthorized', 401);
-				}
-			}
-			if (['Delivered', 'Cancelled'].includes(order.status)) {
-				throw new OrderStoreError('Order can no longer be changed.');
-			}
-			const nextOrder = await handleUpdate(order);
-			const updateResult = await supabase
-				.from(ORDERS_TABLE)
-				.update({ status: nextOrder.status, payload: nextOrder })
-				.eq('id', orderId)
-				.select('payload')
-				.single();
-			if (updateResult.error) {
-				throw updateResult.error;
-			}
-			return sanitizeOrder(updateResult.data.payload);
-		} catch (error) {
-			if (error instanceof OrderStoreError) {
-				throw error;
-			}
-			console.error('Unable to cancel order in Supabase, falling back to file store.', error);
-		}
-	}
 
 	const orders = await readOrdersFromDisk();
 	const index = orders.findIndex(order => order.id === orderId);
@@ -457,5 +340,6 @@ export async function cancelOrder({ orderId, reason, phone, actor = 'customer' }
 
 	const nextOrder = await handleUpdate(order);
 	await writeOrdersToDisk(orders);
+	await syncOrderSummary(nextOrder);
 	return sanitizeOrder(nextOrder);
 }
