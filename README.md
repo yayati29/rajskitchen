@@ -26,12 +26,11 @@ Create a `.env.local` file (never commit it) and define the following variables:
 | --- | --- | --- |
 | `ADMIN_EMAIL` | ✅ | Email required to log into the admin dashboard. |
 | `ADMIN_PASSWORD` | ✅ | Password paired with `ADMIN_EMAIL`. |
-| `SUPABASE_URL` | ✅ (prod) | Supabase project URL. Enables persistent menu + order storage and media uploads. |
+| `NEXT_PUBLIC_SUPABASE_URL` | ✅ (prod) | Supabase project URL (public, safe to expose). |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | ✅ (prod) | Supabase anonymous key (public, used by client). |
+| `SUPABASE_URL` | ✅ (prod) | Supabase project URL (server-side). |
 | `SUPABASE_SERVICE_ROLE_KEY` | ✅ (prod) | Service role key used by server actions and API routes. Store securely. |
 | `SUPABASE_STORAGE_BUCKET` | Optional | Storage bucket for menu images. Defaults to `menu-assets`. |
-| `KV_REST_API_URL` | ✅ (Vercel) | URL for your Vercel KV database. Needed for the kitchen open/closed toggle. |
-| `KV_REST_API_TOKEN` | ✅ (Vercel) | Auth token for KV read/write access. |
-| `KV_REST_API_READ_ONLY_TOKEN` | Optional | Used if you prefer separate read tokens. |
 
 Locally, Supabase/KV credentials are optional: if they are missing, the app falls back to JSON files under `/data` so you can keep working without network access.
 
@@ -131,7 +130,71 @@ The order placement system uses Supabase as the primary store with automatic fal
 
 With this setup the menu editor, order placement/tracking, and kitchen toggle all persist across deployments without relying on the file system that Vercel resets between requests.
 
-Locally, if the KV variables are not present, the app falls back to `data/kitchen-status.json` so you can toggle the kitchen without extra setup. On Vercel you must create a free [Vercel KV](https://vercel.com/docs/storage/vercel-kv) database and add the generated credentials under **Project → Settings → Environment Variables** before deploying; otherwise the “Shut Kitchen” control cannot persist.
+### Kitchen Status Table (in Supabase)
+
+The "Shut Kitchen" button in the admin dashboard toggles whether orders are accepted. The status persists in your Supabase database.
+
+Run this SQL in your Supabase SQL Editor to create the table:
+
+```sql
+-- Create kitchen_status table
+CREATE TABLE public.kitchen_status (
+  id VARCHAR(50) PRIMARY KEY,
+  is_open BOOLEAN DEFAULT true,
+  message VARCHAR(255) DEFAULT 'We will be back shortly.',
+  updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Insert default status
+INSERT INTO public.kitchen_status (id, is_open, message)
+VALUES ('default', true, 'We will be back shortly.')
+ON CONFLICT (id) DO NOTHING;
+
+-- Enable Row Level Security
+ALTER TABLE public.kitchen_status ENABLE ROW LEVEL SECURITY;
+
+-- Create policies
+CREATE POLICY "Allow public read" ON public.kitchen_status
+  FOR SELECT
+  USING (true);
+
+CREATE POLICY "Allow all updates" ON public.kitchen_status
+  FOR UPDATE
+  USING (true)
+  WITH CHECK (true);
+```
+
+#### How It Works
+- Kitchen status is stored in `kitchen_status` table with a single row (`id = 'default'`)
+- Locally: Falls back to `data/kitchen-status.json` if Supabase unavailable
+- On Vercel: Uses Supabase database (persists across deployments)
+- No Vercel KV needed!
+
+## Kitchen Status & Order Acceptance
+
+### How It Works
+1. Admin clicks the **"Shut Kitchen"** button in the dashboard (top right)
+2. Status is saved to Supabase `kitchen_status` table (production) or local file (development)
+3. When closed, customers see "Kitchen is temporarily closed" on checkout page
+4. When open again, customers can resume ordering
+
+### Testing Locally
+1. Start the dev server: `npm run dev`
+2. Go to admin dashboard: `/admin/login` → login with your credentials
+3. Click the **"Shut Kitchen"** button (top right)
+4. The button should toggle to **"Open Kitchen"**
+5. Go to checkout `/checkout` → you should see "Kitchen is temporarily closed"
+6. Click "Open Kitchen" to resume
+7. Kitchen status falls back to `data/kitchen-status.json` (since Supabase is in SQL Editor, not in real-time during local dev)
+
+### Testing on Vercel
+1. Create the `kitchen_status` table in Supabase (see SQL above)
+2. Ensure `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set in Vercel env vars
+3. Deploy to Vercel: `git push`
+4. Go to admin dashboard and click "Shut Kitchen"
+5. Go to checkout page in an incognito/private window → should show closed message
+6. Refresh both tabs → status should persist (reads from Supabase)
+7. Check Supabase → Tables → `kitchen_status` → you should see `is_open = false`
 
 ## Troubleshooting Order Placement
 
@@ -170,6 +233,63 @@ If Supabase fails, orders are saved locally:
 - If nothing is there, the API route itself failed
 
 If you see errors in the logs but orders appear locally, Supabase connection/permissions need fixing.
+
+## Troubleshooting Kitchen Status
+
+If the "Shut Kitchen" button doesn't work:
+
+### Check 1: Verify Supabase Table Exists
+1. Go to Supabase Dashboard → **Database → Tables**
+2. Look for `kitchen_status` table
+3. Click on it and verify columns: `id`, `is_open`, `message`, `updated_at`
+4. If missing, run the SQL commands from the Kitchen Status Table section above
+
+### Check 2: Verify API Endpoint
+Open your browser console and test the endpoint manually:
+```javascript
+// Check current status
+fetch('/api/kitchen/status').then(r => r.json()).then(console.log)
+
+// Toggle kitchen closed
+fetch('/api/kitchen/status', {
+  method: 'PATCH',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ isOpen: false })
+}).then(r => r.json()).then(console.log)
+```
+
+If these work, the API is fine.
+
+### Check 3: Local Development
+Kitchen status falls back to `data/kitchen-status.json`:
+- Click "Shut Kitchen" in admin dashboard
+- Check the file exists and contains: `{ "isOpen": false, "message": "..." }`
+
+### Check 4: Vercel Production
+If status doesn't persist on Vercel:
+1. Go to Vercel Dashboard → Your Project → **Settings → Environment Variables**
+2. Verify these are set:
+   - `SUPABASE_URL`
+   - `SUPABASE_SERVICE_ROLE_KEY`
+3. If missing, copy them from Supabase Dashboard → Settings → API
+4. Redeploy with `git push`
+
+### Check 5: Vercel Logs
+1. Go to **Deployments → (latest) → Functions**
+2. Look for `/api/kitchen/status` errors
+3. Check for Supabase errors like `SUPABASE_URL not set` or RLS policy errors
+
+### Check 6: Verify in Supabase
+1. Go to Supabase → **kitchen_status** table
+2. Click the single row with `id = 'default'`
+3. Verify `is_open` and `message` fields match what you expect
+4. Manually update `is_open` to test if changes appear on the site
+
+### Check 7: Test in Incognito
+1. Toggle kitchen on/off in admin
+2. Open incognito/private window
+3. Go to checkout → should reflect the status
+4. Refresh → status should persist (reads from Supabase)
 
 ## Sync Existing Menu Data
 

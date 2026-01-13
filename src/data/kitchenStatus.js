@@ -1,16 +1,19 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { kv } from '@vercel/kv';
+import { getSupabaseAdminClient } from '@/lib/supabaseServer';
 
 const dataDirectory = path.join(process.cwd(), 'data');
 const statusFilePath = path.join(dataDirectory, 'kitchen-status.json');
-const STATUS_KEY = 'kitchen:status';
+const KITCHEN_TABLE = 'kitchen_status';
+const STATUS_ID = 'default'; // Single row for kitchen status
+
 const defaultStatus = {
   isOpen: true,
   message: 'We will be back shortly.',
 };
 
-const kvAvailable = Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
+const supabase = getSupabaseAdminClient();
+const supabaseEnabled = Boolean(supabase);
 
 async function ensureStatusFile() {
   await fs.mkdir(dataDirectory, { recursive: true });
@@ -47,32 +50,88 @@ async function writeStatusToFile(status) {
   await fs.writeFile(statusFilePath, JSON.stringify(status, null, 2), 'utf-8');
 }
 
+async function readStatusFromSupabase() {
+  if (!supabaseEnabled) {
+    return null;
+  }
+  try {
+    const { data, error } = await supabase
+      .from(KITCHEN_TABLE)
+      .select('*')
+      .eq('id', STATUS_ID)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Unable to read kitchen status from Supabase:', error.message);
+      return null;
+    }
+
+    if (data) {
+      return normalizeStatus({
+        isOpen: data.is_open,
+        message: data.message,
+      });
+    }
+  } catch (error) {
+    console.error('Unable to fetch kitchen status from Supabase:', error);
+  }
+  return null;
+}
+
+async function writeStatusToSupabase(status) {
+  if (!supabaseEnabled) {
+    console.warn('Supabase not enabled, kitchen status not persisted');
+    return false;
+  }
+  try {
+    const { error } = await supabase
+      .from(KITCHEN_TABLE)
+      .upsert(
+        {
+          id: STATUS_ID,
+          is_open: status.isOpen,
+          message: status.message,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' }
+      );
+
+    if (error) {
+      console.error('Unable to write kitchen status to Supabase:', error.message);
+      return false;
+    }
+    console.log('Kitchen status persisted to Supabase');
+    return true;
+  } catch (error) {
+    console.error('Unable to persist kitchen status to Supabase:', error);
+    return false;
+  }
+}
+
 export async function getKitchenStatus() {
-  if (kvAvailable) {
-    try {
-      const stored = await kv.get(STATUS_KEY);
-      if (stored) {
-        return normalizeStatus(stored);
-      }
-    } catch (error) {
-      console.error('Unable to read kitchen status from KV', error);
+  // Try Supabase first
+  if (supabaseEnabled) {
+    const status = await readStatusFromSupabase();
+    if (status) {
+      return status;
     }
   }
+  // Fallback to file
   return readStatusFromFile();
 }
 
 export async function setKitchenStatus({ isOpen, message }) {
   const nextStatus = normalizeStatus({ isOpen, message });
 
-  if (kvAvailable) {
-    try {
-      await kv.set(STATUS_KEY, nextStatus);
+  // Try Supabase first
+  if (supabaseEnabled) {
+    const success = await writeStatusToSupabase(nextStatus);
+    if (success) {
       return nextStatus;
-    } catch (error) {
-      console.error('Unable to write kitchen status to KV', error);
     }
   }
 
+  // Fallback to file
   await writeStatusToFile(nextStatus);
   return nextStatus;
 }
